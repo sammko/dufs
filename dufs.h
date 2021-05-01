@@ -54,7 +54,7 @@ struct direntry_t {
     u32 inode;
     u16 entry_size;
     // u8 filename_length;
-    char filename[]; // fma
+    char filename[]; // fam
 } __attribute__((packed, scalar_storage_order("little-endian")));
 
 struct datablock_indir_t {
