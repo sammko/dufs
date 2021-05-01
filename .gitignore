@@ -1,0 +1,10 @@
+.vscode/
+*.o
+d.bin
+disk.bin
+disk.bin.rehex-meta
+test
+vgcore*
+wrapper
+a.out
+
