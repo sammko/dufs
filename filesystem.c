@@ -180,7 +180,7 @@ bool dufs_bitmap_get_datablock(size_t pos) {
 }
 
 blockptr_t dufs_alloc_datablock(size_t req) {
-    fprintf(stderr, "alloc called with req: %lu\n", req);
+    fprintf(stderr, "alloc data called with req: %lu\n", req);
     if (!dufs_bitmap_get_datablock(req)) {
         // requested block is free, alloc it
         dufs_bitmap_set_datablock(req, true);
@@ -196,6 +196,26 @@ blockptr_t dufs_alloc_datablock(size_t req) {
             dufs_bitmap_set_datablock(db, true);
             fprintf(stderr, "   ret: %lu\n", db);
             return db;
+        }
+    }
+    return FAIL;
+}
+
+inodeptr_t dufs_alloc_inode(size_t req) {
+    fprintf(stderr, "alloc inode called with req: %lu\n", req);
+    if (!dufs_bitmap_get(req)) {
+        dufs_bitmap_set(req, true);
+        fprintf(stderr, "   req avail\n");
+        return req;
+    }
+    fprintf(stderr, "   req notavail\n");
+    // TODO bitmap cache or randomize
+    size_t count = hdd_size() / SECTOR_SIZE;
+    for (size_t i = 0; i < count; i++) {
+        if (!dufs_bitmap_get(i)) {
+            dufs_bitmap_set(i, true);
+            fprintf(stderr, "   ret: %lu\n", i);
+            return i;
         }
     }
     return FAIL;
@@ -464,7 +484,8 @@ ret:
     return ret;
 }
 
-inodeptr_t dufs_dir_find_filename(const struct inode_t *dir, char *filename) {
+inodeptr_t dufs_dir_find_filename(const struct inode_t *dir,
+                                  const char *filename) {
     assert(dir->type == INODE_TYPE_DIR);
     if (dir->fsize == 0)
         return FAIL;
@@ -487,7 +508,7 @@ inodeptr_t dufs_dir_find_filename(const struct inode_t *dir, char *filename) {
     while (off < dir->fsize) {
         entr = (struct direntry_t *)(dirdata + off);
 
-        if (!strcmp(entr->filename, filename)) { // strncmp would be better
+        if (!strcmp(entr->filename, filename)) { // TODO strncmp would be better
             ret = entr->inode;
             goto ret;
         }
@@ -500,6 +521,25 @@ fail:
 ret:
     free(dirdata);
     return ret;
+}
+
+void dufs_dir_append_filename(struct inode_t *dir, const char *filename,
+                              inodeptr_t target) {
+    assert(dir->type == INODE_TYPE_DIR);
+    // this assumes that the filename does not already exist in the directory.
+
+    size_t end = dir->fsize;
+    u8 buf[MAX_FILENAME_LEN + 1 + sizeof(struct direntry_t)];
+    struct direntry_t *entr = (struct direntry_t *)buf;
+    size_t namelen = strlen(filename) + 1;
+    size_t len = namelen + sizeof(struct direntry_t);
+
+    entr->inode = target;
+    entr->entry_size = len;
+    strncpy(entr->filename, filename, MAX_FILENAME_LEN);
+
+    dufs_inode_write_data(dir, end, entr->entry_size, buf);
+    // TODO handle incomplete write
 }
 
 /**

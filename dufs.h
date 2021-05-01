@@ -20,6 +20,8 @@
 #define INODE_TYPE_DIR STAT_TYPE_DIR
 #define INODE_TYPE_SYMLINK STAT_TYPE_SYMLINK
 
+#define MAX_FILENAME_LEN 255
+
 #define DPTR_VALID(p) (p) // use 0 for invalid
 
 typedef uint8_t u8;
@@ -71,10 +73,13 @@ size_t dufs_read_datablock_indirect(int indir, size_t dblock_indir,
 void dufs_read_inode(struct inode_t *in, size_t sector_addr);
 size_t dufs_inode_read_data(const struct inode_t *in, size_t from, size_t len,
                             u8 *buf);
-inodeptr_t dufs_dir_find_filename(const struct inode_t *dir, char *filename);
+inodeptr_t dufs_dir_find_filename(const struct inode_t *dir,
+                                  const char *filename);
 size_t dufs_write_datablock(size_t dblock, size_t offset, size_t len, u8 *buf);
 size_t dufs_write_datablock_indirect(int indir, size_t dblock_indir,
                                      size_t offset, size_t len, u8 *buf);
 size_t dufs_inode_write_data(struct inode_t *in, size_t from, size_t len,
                              u8 *buf);
+void dufs_dir_append_filename(struct inode_t *dir, const char *filename,
+                              inodeptr_t target);
 #endif
