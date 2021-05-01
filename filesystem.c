@@ -545,6 +545,56 @@ void dufs_dir_append_filename(struct inode_t *dir, const char *filename,
     // TODO handle incomplete write
 }
 
+int dufs_dir_remove_filename(struct inode_t *dir, const char *filename) {
+    int ret;
+    assert(dir->type == INODE_TYPE_DIR);
+    if (dir->fsize == 0)
+        return FAIL;
+    u8 *dirdata = malloc(dir->fsize);
+
+    if (!dirdata) {
+        perror("malloc");
+        // exit(1);
+        goto fail;
+    }
+
+    dufs_inode_read_data(dir, 0, dir->fsize, dirdata);
+
+    size_t off = 0;
+    struct direntry_t *entr;
+
+    while (off < dir->fsize) {
+        entr = (struct direntry_t *)(dirdata + off);
+
+        if (!strcmp(entr->filename, filename)) { // TODO strncmp would be better
+            break;
+        }
+
+        off += entr->entry_size;
+    }
+    if (off >= dir->fsize) {
+        goto fail;
+    }
+    fprintf(stderr, "dirremove: found entry. size: %d\n", entr->entry_size);
+    memmove(dirdata + off, dirdata + off + entr->entry_size,
+            dir->fsize - off - entr->entry_size);
+
+    // TODO this is broken
+
+    size_t orig_size = dir->fsize;
+    dufs_inode_write_data(dir, 0, dir->fsize, dirdata);
+
+    dufs_write_inode(dir, dir->num);
+    ret = OK;
+    goto ret;
+
+fail:
+    ret = FAIL;
+ret:
+    free(dirdata);
+    return ret;
+}
+
 static char dufs_tok_delim[2] = {PATHSEP, 0};
 inodeptr_t dufs_path_lookup(const char *path) {
     inodeptr_t rootinode = dufs_root_inode_pos();
@@ -591,6 +641,35 @@ inodeptr_t dufs_path_lookup(const char *path) {
     }
 
     return nextptr;
+}
+
+void dufs_free_datablock_indir(int indir, size_t dblock_indir) {
+    if (indir == 0) {
+        dufs_bitmap_set_datablock(dblock_indir, false);
+    }
+
+    struct datablock_indir_t ptrs;
+    dufs_read_datablock(dblock_indir, 0, DATABLOCK_SIZE, (u8 *)&ptrs);
+
+    for (size_t i = 0; i < DATABLOCK_INDIR_PTR_COUNT; i++) {
+        if (!DPTR_VALID(ptrs.pts[i])) {
+            return;
+        }
+        dufs_free_datablock_indir(indir - 1, ptrs.pts[i]);
+    }
+}
+
+void dufs_inode_free(struct inode_t *in) {
+    for (size_t i = 0; i < INODE_REF_COUNT; i++) {
+        if (!DPTR_VALID(in->data[i])) {
+            return;
+        }
+        dufs_free_datablock_indir(0, in->data[i]);
+    }
+    for (size_t i = 0; i < INODE_INDIR_COUNT; i++) {
+        dufs_free_datablock_indir(i + 1, in->data_indir[i]);
+    }
+    dufs_bitmap_set(in->num, false);
 }
 
 file_t *dufs_open_inode(inodeptr_t ino) {
@@ -699,7 +778,34 @@ int fs_close(file_t *fd) {
  * Ak zadana cesta existuje a je to subor, odstrani subor z disku; nemeni
  * adresarovu strukturu. V pripade chyby vracia FAIL.
  */
-int fs_unlink(const char *path) { return FAIL; }
+int fs_unlink(const char *path) {
+    inodeptr_t ino = dufs_path_lookup(path);
+    if (ino == FAIL) {
+        return FAIL;
+    }
+
+    char pathcpy[MAX_PATH_LEN];
+    strncpy(pathcpy, path, MAX_PATH_LEN);
+    char *dirname = pathcpy;
+    char *lastsep = strrchr(pathcpy, PATHSEP);
+    *lastsep = 0;
+    char *basename = lastsep + 1;
+
+    inodeptr_t inodir = dufs_path_lookup(dirname);
+    struct inode_t indir;
+    dufs_read_inode(&indir, inodir);
+    dufs_dir_remove_filename(&indir, basename);
+
+    struct inode_t in;
+    fprintf(stderr, "fs_unlink read file inode, ino: %u\n", ino);
+    dufs_read_inode(&in, ino);
+    if (--in.refcnt == 0) {
+        dufs_inode_free(&in);
+    } else {
+        dufs_write_inode(&in, in.num);
+    }
+    return OK;
+}
 
 /**
  * Premenuje/presunie polozku v suborovom systeme z 'oldpath' na 'newpath'.
