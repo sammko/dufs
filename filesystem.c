@@ -61,7 +61,9 @@ size_t dufs_first_usable_sector() {
     return BITMAP_OFFSET + dufs_bitmap_sectors() + 1;
 }
 
-size_t dufs_root_inode_pos() { return BITMAP_OFFSET + dufs_bitmap_sectors(); }
+inodeptr_t dufs_root_inode_pos() {
+    return BITMAP_OFFSET + dufs_bitmap_sectors();
+}
 
 /**
  * This should only be called when formatting.
@@ -336,7 +338,8 @@ size_t dufs_inode_read_data(const struct inode_t *in, size_t from, size_t len,
     return fullreadlen;
 }
 
-size_t dufs_write_datablock(size_t dblock, size_t offset, size_t len, u8 *buf) {
+size_t dufs_write_datablock(size_t dblock, size_t offset, size_t len,
+                            const u8 *buf) {
     if (offset >= DATABLOCK_SIZE)
         return 0;
 
@@ -365,7 +368,7 @@ size_t dufs_write_datablock(size_t dblock, size_t offset, size_t len, u8 *buf) {
 }
 
 size_t dufs_write_datablock_indirect(int indir, size_t dblock_indir,
-                                     size_t offset, size_t len, u8 *buf) {
+                                     size_t offset, size_t len, const u8 *buf) {
     if (indir == 0) {
         return dufs_write_datablock(dblock_indir, offset, len, buf);
     }
@@ -416,7 +419,7 @@ size_t dufs_write_datablock_indirect(int indir, size_t dblock_indir,
 }
 
 size_t dufs_inode_write_data(struct inode_t *in, size_t from, size_t len,
-                             u8 *buf) {
+                             const u8 *buf) {
     size_t tlen = len;
     size_t tfrom = from;
     size_t ret;
@@ -542,6 +545,63 @@ void dufs_dir_append_filename(struct inode_t *dir, const char *filename,
     // TODO handle incomplete write
 }
 
+static char dufs_tok_delim[2] = {PATHSEP, 0};
+inodeptr_t dufs_path_lookup(const char *path) {
+    inodeptr_t rootinode = dufs_root_inode_pos();
+    if (path[0] == 0) {
+        return rootinode;
+    }
+    assert(path[0] == PATHSEP);
+    if (path[1] == 0) {
+        return rootinode;
+    }
+    assert(strlen(path) < MAX_PATH_LEN);
+
+    char pathcpy[MAX_PATH_LEN];
+    strncpy(pathcpy, path, MAX_PATH_LEN);
+    char *pathptr = pathcpy;
+    pathptr++;
+
+    struct inode_t inode;
+    dufs_read_inode(&inode, rootinode);
+
+    inodeptr_t nextptr;
+    char *saveptr = NULL;
+    char *ptok = strtok_r(pathptr, dufs_tok_delim, &saveptr);
+    fprintf(stderr, "p: <%s>\n", ptok);
+
+    nextptr = dufs_dir_find_filename(&inode, ptok);
+    if (nextptr == FAIL) {
+        return FAIL;
+    }
+    char *tok = strtok_r(NULL, dufs_tok_delim, &saveptr);
+
+    while (tok != NULL) {
+        fprintf(stderr, "t: <%s>\n", tok);
+        dufs_read_inode(&inode, nextptr);
+        if (inode.type != INODE_TYPE_DIR) { // TODO symlinks
+            return FAIL;
+        }
+        nextptr = dufs_dir_find_filename(&inode, tok);
+        if (nextptr == FAIL) {
+            return FAIL;
+        }
+        ptok = tok;
+        tok = strtok_r(NULL, dufs_tok_delim, &saveptr);
+    }
+
+    return nextptr;
+}
+
+file_t *dufs_open_inode(inodeptr_t ino) {
+    file_t *fd = fd_alloc();
+    fd->info[FILET_INODEPTR] = ino;
+    fd->info[FILET_OFFSET] = 0;
+    return fd;
+}
+
+void dufs_close_filet(file_t *fd) { fd_free(fd); }
+
 /**
  * Naformatovanie disku.
  *
@@ -573,7 +633,39 @@ void fs_format() {
  * subory).
  */
 
-file_t *fs_creat(const char *path) { return (file_t *)FAIL; }
+file_t *fs_creat(const char *path) {
+    char pathcpy[MAX_PATH_LEN];
+    strncpy(pathcpy, path, MAX_PATH_LEN);
+    char *pathptr = pathcpy;
+
+    char *lastsep = strrchr(pathcpy, PATHSEP);
+    *lastsep = 0; // pathptr now contains prefix
+    char *basename = lastsep + 1;
+
+    inodeptr_t ret = dufs_path_lookup(pathptr);
+    if (ret == FAIL) {
+        return NULL;
+    }
+    struct inode_t dirinode;
+    dufs_read_inode(&dirinode, ret);
+
+    inodeptr_t newptr =
+        dufs_alloc_inode(0); // TODO read last loc from superblock?
+    if (newptr == FAIL) {
+        return NULL;
+    }
+    struct inode_t new;
+    memset(&new, 0, sizeof(struct inode_t));
+    new.refcnt = 1;
+    new.type = INODE_TYPE_FILE;
+    new.fsize = 0;
+    new.num = newptr;
+    dufs_write_inode(&new, newptr);
+
+    dufs_dir_append_filename(&dirinode, basename, newptr);
+
+    return dufs_open_inode(newptr);
+}
 
 /**
  * Otvorenie existujuceho suboru.
@@ -581,7 +673,13 @@ file_t *fs_creat(const char *path) { return (file_t *)FAIL; }
  * Ak zadany subor existuje, funkcia ho otvori a vrati handle nan. Pozicia v
  * subore bude nastavena na 0-ty bajt. Ak subor neexistuje, vrati FAIL.
  */
-file_t *fs_open(const char *path) { return (file_t *)FAIL; }
+file_t *fs_open(const char *path) {
+    inodeptr_t ret = dufs_path_lookup(path);
+    if (ret == FAIL) {
+        return NULL;
+    }
+    return dufs_open_inode(ret);
+}
 
 /**
  * Zatvori otvoreny file handle.
@@ -590,7 +688,10 @@ file_t *fs_open(const char *path) { return (file_t *)FAIL; }
  * 'creat' a uvolni prostriedky, ktore su s nim spojene. V pripade akehokolvek
  * zlyhania vrati FAIL.
  */
-int fs_close(file_t *fd) { return FAIL; }
+int fs_close(file_t *fd) {
+    dufs_close_filet(fd);
+    return OK;
+}
 
 /**
  * Odstrani subor na ceste 'path'.
@@ -619,7 +720,15 @@ int fs_rename(const char *oldpath, const char *newpath) { return FAIL; }
  * subore. Vrati pocet precitanych bajtov z 'bytes', alebo FAIL v pripade
  * zlyhania. Existujuci subor prepise.
  */
-int fs_read(file_t *fd, uint8_t *bytes, size_t size) { return FAIL; }
+int fs_read(file_t *fd, uint8_t *bytes, size_t size) {
+    inodeptr_t ino = fd->info[FILET_INODEPTR];
+    size_t off = fd->info[FILET_OFFSET];
+    struct inode_t in;
+    dufs_read_inode(&in, ino);
+    int ret = dufs_inode_read_data(&in, off, size, bytes);
+    fd->info[FILET_OFFSET] += ret;
+    return ret;
+}
 
 /**
  * Zapise do 'fd' na aktualnu poziciu 'size' bajtov z 'bytes'.
@@ -633,7 +742,15 @@ int fs_read(file_t *fd, uint8_t *bytes, size_t size) { return FAIL; }
  * Write pre poziciu tesne za koncom existujucich dat zvacsi velkost suboru.
  */
 
-int fs_write(file_t *fd, const uint8_t *bytes, size_t size) { return FAIL; }
+int fs_write(file_t *fd, const uint8_t *bytes, size_t size) {
+    inodeptr_t ino = fd->info[FILET_INODEPTR];
+    size_t off = fd->info[FILET_OFFSET];
+    struct inode_t in;
+    dufs_read_inode(&in, ino);
+    int ret = dufs_inode_write_data(&in, off, size, bytes);
+    fd->info[FILET_OFFSET] += ret;
+    return ret;
+}
 
 /**
  * Zmeni aktualnu poziciu v subore na 'pos'-ty byte.
@@ -642,13 +759,22 @@ int fs_write(file_t *fd, const uint8_t *bytes, size_t size) { return FAIL; }
  * sa nezmeni, inac vracia OK.
  */
 
-int fs_seek(file_t *fd, size_t pos) { return FAIL; }
+int fs_seek(file_t *fd, size_t pos) {
+    inodeptr_t ino = fd->info[FILET_INODEPTR];
+    struct inode_t in;
+    dufs_read_inode(&in, ino);
+    if (pos > in.fsize) { // TODO maybe >=
+        return FAIL;
+    }
+    fd->info[FILET_OFFSET] = pos;
+    return OK;
+}
 
 /**
  * Vrati aktualnu poziciu v subore.
  */
 
-size_t fs_tell(file_t *fd) { return FAIL; }
+size_t fs_tell(file_t *fd) { return fd->info[FILET_OFFSET]; }
 
 /**
  * Vrati informacie o 'path'.
@@ -662,7 +788,19 @@ size_t fs_tell(file_t *fd) { return FAIL; }
  *
  */
 
-int fs_stat(const char *path, struct fs_stat *fs_stat) { return FAIL; }
+int fs_stat(const char *path, struct fs_stat *fs_stat) {
+    inodeptr_t ino = dufs_path_lookup(path);
+    if (ino == FAIL)
+        return FAIL;
+
+    struct inode_t in;
+    dufs_read_inode(&in, ino);
+
+    fs_stat->st_size = in.fsize;
+    fs_stat->st_nlink = in.refcnt;
+    fs_stat->st_type = in.type;
+    return OK;
+}
 
 /* Level 3 */
 /**
