@@ -489,6 +489,16 @@ ret:
     return ret;
 }
 
+bool dufs_dir_is_empty(const struct inode_t *dir) {
+    if (dir->fsize == 0)
+        return true;
+    struct direntry_t de;
+    dufs_inode_read_data(dir, 0, sizeof(struct direntry_t), (u8 *)(&de));
+    if (de.entry_size == 0)
+        return true;
+    return false;
+}
+
 inodeptr_t dufs_dir_find_filename(const struct inode_t *dir,
                                   const char *filename, size_t *endoff) {
     assert(dir->type == INODE_TYPE_DIR);
@@ -691,6 +701,30 @@ void dufs_inode_free(struct inode_t *in) {
     dufs_bitmap_set(in->num, false);
 }
 
+int dufs_unlink(const char *path, struct inode_t in) {
+    char pathcpy[MAX_PATH_LEN];
+    strncpy(pathcpy, path, MAX_PATH_LEN);
+    char *dirname = pathcpy;
+    char *lastsep = strrchr(pathcpy, PATHSEP);
+    *lastsep = 0;
+    char *basename = lastsep + 1;
+
+    inodeptr_t inodir = dufs_path_lookup(dirname);
+    struct inode_t indir;
+    dufs_read_inode(&indir, inodir);
+
+    if (dufs_dir_remove_filename(&indir, basename) == FAIL) {
+        return FAIL;
+    }
+
+    if (--in.refcnt == 0) {
+        dufs_inode_free(&in);
+    } else {
+        dufs_write_inode(&in, in.num);
+    }
+    return OK;
+}
+
 file_t *dufs_open_inode(inodeptr_t ino) {
     file_t *fd = fd_alloc();
     fd->info[FILET_INODEPTR] = ino;
@@ -814,28 +848,12 @@ int fs_unlink(const char *path) {
     if (ino == FAIL) {
         return FAIL;
     }
-
-    char pathcpy[MAX_PATH_LEN];
-    strncpy(pathcpy, path, MAX_PATH_LEN);
-    char *dirname = pathcpy;
-    char *lastsep = strrchr(pathcpy, PATHSEP);
-    *lastsep = 0;
-    char *basename = lastsep + 1;
-
-    inodeptr_t inodir = dufs_path_lookup(dirname);
-    struct inode_t indir;
-    dufs_read_inode(&indir, inodir);
-    dufs_dir_remove_filename(&indir, basename);
-
     struct inode_t in;
     fprintf(stderr, "fs_unlink read file inode, ino: %u\n", ino);
     dufs_read_inode(&in, ino);
-    if (--in.refcnt == 0) {
-        dufs_inode_free(&in);
-    } else {
-        dufs_write_inode(&in, in.num);
-    }
-    return OK;
+    if (in.type == INODE_TYPE_DIR)
+        return FAIL;
+    return dufs_unlink(path, in);
 }
 
 /**
@@ -954,7 +972,47 @@ int fs_stat(const char *path, struct fs_stat *fs_stat) {
  * Ak cesta, v ktorej adresar ma byt, neexistuje, vrati FAIL (vytvara najviac
  * jeden adresar), pri korektnom vytvoreni OK.
  */
-int fs_mkdir(const char *path) { return FAIL; }
+int fs_mkdir(const char *path) {
+    fprintf(stderr, "mkdir: %s\n", path);
+    char pathcpy[MAX_PATH_LEN];
+    strncpy(pathcpy, path, MAX_PATH_LEN);
+    char *pathptr = pathcpy;
+
+    char *lastsep = strrchr(pathcpy, PATHSEP);
+    *lastsep = 0; // pathptr now contains prefix
+    char *basename = lastsep + 1;
+
+    inodeptr_t ret = dufs_path_lookup(pathptr);
+    if (ret == FAIL) {
+        return FAIL;
+    }
+    struct inode_t parentinode;
+    dufs_read_inode(&parentinode, ret);
+
+    size_t endoff;
+    inodeptr_t ino = dufs_dir_find_filename(&parentinode, basename, &endoff);
+    if (ino != FAIL) {
+        // file exists
+        return FAIL;
+    }
+
+    inodeptr_t newptr =
+        dufs_alloc_inode(0); // TODO read last loc from superblock?
+    if (newptr == FAIL) {
+        return FAIL;
+    }
+    struct inode_t new;
+    memset(&new, 0, sizeof(struct inode_t));
+    new.refcnt = 1;
+    new.type = INODE_TYPE_DIR;
+    new.fsize = 0;
+    new.num = newptr;
+    dufs_write_inode(&new, newptr);
+
+    dufs_dir_append_filename(&parentinode, basename, newptr, endoff);
+
+    return OK;
+}
 
 /**
  * Odstrani adresar 'path'.
@@ -962,7 +1020,21 @@ int fs_mkdir(const char *path) { return FAIL; }
  * Odstrani adresar, na ktory ukazuje 'path'; ak neexistuje alebo nie je
  * adresar, vrati FAIL; po uspesnom dokonceni vrati OK.
  */
-int fs_rmdir(const char *path) { return FAIL; }
+int fs_rmdir(const char *path) {
+    inodeptr_t ino = dufs_path_lookup(path);
+    if (ino == FAIL) {
+        return FAIL;
+    }
+    struct inode_t in;
+    dufs_read_inode(&in, ino);
+    if (in.type != INODE_TYPE_DIR) {
+        return FAIL;
+    }
+    if (!dufs_dir_is_empty(&in)) {
+        return FAIL;
+    }
+    return dufs_unlink(path, in);
+}
 
 /**
  * Otvori adresar 'path' (na citanie poloziek)
@@ -996,6 +1068,12 @@ int fs_link(const char *path, const char *linkpath) {
     if (ino == FAIL) {
         return FAIL;
     }
+
+    struct inode_t inode;
+    dufs_read_inode(&inode, ino);
+    if (inode.type == INODE_TYPE_DIR)
+        return FAIL;
+
     char linkpathcpy[MAX_PATH_LEN];
     strncpy(linkpathcpy, linkpath, MAX_PATH_LEN);
     char *pathptr = linkpathcpy;
@@ -1019,8 +1097,6 @@ int fs_link(const char *path, const char *linkpath) {
 
     dufs_dir_append_filename(&dirinode, basename, ino, endoff);
 
-    struct inode_t inode;
-    dufs_read_inode(&inode, ino);
     inode.refcnt++;
     dufs_write_inode(&inode, inode.num);
     return OK;
