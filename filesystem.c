@@ -669,7 +669,7 @@ void dufs_free_datablock_indir(int indir, size_t dblock_indir) {
     }
 }
 
-void dufs_inode_free(struct inode_t *in) {
+void dufs_inode_free_data(struct inode_t *in) {
     for (size_t i = 0; i < INODE_REF_COUNT; i++) {
         if (!DPTR_VALID(in->data[i])) {
             return;
@@ -679,6 +679,11 @@ void dufs_inode_free(struct inode_t *in) {
     for (size_t i = 0; i < INODE_INDIR_COUNT; i++) {
         dufs_free_datablock_indir(i + 1, in->data_indir[i]);
     }
+    in->fsize = 0;
+}
+
+void dufs_inode_free(struct inode_t *in) {
+    dufs_inode_free_data(in);
     dufs_bitmap_set(in->num, false);
 }
 
@@ -739,9 +744,14 @@ file_t *fs_creat(const char *path) {
     dufs_read_inode(&dirinode, ret);
 
     size_t endoff;
-    if (dufs_dir_find_filename(&dirinode, basename, &endoff) != FAIL) {
-        // TODO existuje
-        return NULL;
+    inodeptr_t ino = dufs_dir_find_filename(&dirinode, basename, &endoff);
+    if (ino != FAIL) {
+        // file exists, truncate
+        struct inode_t in;
+        dufs_read_inode(&in, ino);
+        dufs_inode_free_data(&in);
+        dufs_write_inode(&in, in.num);
+        return dufs_open_inode(ino);
     }
 
     inodeptr_t newptr =
@@ -832,7 +842,15 @@ int fs_unlink(const char *path) {
  * z cesty newpath, okrem posledneho v pripade premenovania adresara).
  * V pripade zlyhania vracia FAIL.
  */
-int fs_rename(const char *oldpath, const char *newpath) { return FAIL; }
+int fs_rename(const char *oldpath, const char *newpath) {
+    if (fs_link(oldpath, newpath) == FAIL) {
+        return FAIL;
+    }
+    if (fs_unlink(oldpath) == FAIL) {
+        return FAIL;
+    }
+    return OK;
+}
 
 /**
  * Nacita z aktualnej pozicie vo 'fd' do bufferu 'bytes' najviac 'size' bajtov.
@@ -968,7 +986,40 @@ int fs_closedir(file_t *dir) { return FAIL; }
 /**
  * Vytvori hardlink zo suboru 'path' na 'linkpath'.
  */
-int fs_link(const char *path, const char *linkpath) { return FAIL; }
+int fs_link(const char *path, const char *linkpath) {
+    inodeptr_t ino = dufs_path_lookup(path);
+    if (ino == FAIL) {
+        return FAIL;
+    }
+    char linkpathcpy[MAX_PATH_LEN];
+    strncpy(linkpathcpy, linkpath, MAX_PATH_LEN);
+    char *pathptr = linkpathcpy;
+
+    char *lastsep = strrchr(linkpathcpy, PATHSEP);
+    *lastsep = 0;
+    char *basename = lastsep + 1;
+
+    inodeptr_t ret = dufs_path_lookup(pathptr);
+    if (ret == FAIL) {
+        return FAIL;
+    }
+    struct inode_t dirinode;
+    dufs_read_inode(&dirinode, ret);
+
+    size_t endoff;
+    ret = dufs_dir_find_filename(&dirinode, basename, &endoff);
+    if (ret != FAIL) {
+        return FAIL;
+    }
+
+    dufs_dir_append_filename(&dirinode, basename, ino, endoff);
+
+    struct inode_t inode;
+    dufs_read_inode(&inode, ino);
+    inode.refcnt++;
+    dufs_write_inode(&inode, inode.num);
+    return OK;
+}
 
 /**
  * Vytvori symlink z 'path' na 'linkpath'.
