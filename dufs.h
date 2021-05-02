@@ -78,7 +78,7 @@ void dufs_read_inode(struct inode_t *in, size_t sector_addr);
 size_t dufs_inode_read_data(const struct inode_t *in, size_t from, size_t len,
                             u8 *buf);
 inodeptr_t dufs_dir_find_filename(const struct inode_t *dir,
-                                  const char *filename);
+                                  const char *filename, size_t *endoff);
 size_t dufs_write_datablock(size_t dblock, size_t offset, size_t len,
                             const u8 *buf);
 size_t dufs_write_datablock_indirect(int indir, size_t dblock_indir,
@@ -86,5 +86,5 @@ size_t dufs_write_datablock_indirect(int indir, size_t dblock_indir,
 size_t dufs_inode_write_data(struct inode_t *in, size_t from, size_t len,
                              const u8 *buf);
 void dufs_dir_append_filename(struct inode_t *dir, const char *filename,
-                              inodeptr_t target);
+                              inodeptr_t target, size_t endoff);
 #endif

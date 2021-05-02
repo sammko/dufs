@@ -488,10 +488,12 @@ ret:
 }
 
 inodeptr_t dufs_dir_find_filename(const struct inode_t *dir,
-                                  const char *filename) {
+                                  const char *filename, size_t *endoff) {
     assert(dir->type == INODE_TYPE_DIR);
-    if (dir->fsize == 0)
+    if (dir->fsize == 0) {
+        *endoff = 0;
         return FAIL;
+    }
     inodeptr_t ret;
     // ideally we would not allocate and just process the structure in chunks.
     // one only has so much time though.
@@ -499,39 +501,43 @@ inodeptr_t dufs_dir_find_filename(const struct inode_t *dir,
 
     if (!dirdata) {
         perror("malloc");
-        // exit(1);
-        goto fail;
+        exit(1);
     }
 
     dufs_inode_read_data(dir, 0, dir->fsize, dirdata);
-
     size_t off = 0;
+
     struct direntry_t *entr;
 
     while (off < dir->fsize) {
         entr = (struct direntry_t *)(dirdata + off);
 
+        if (entr->entry_size == 0) {
+            goto fail;
+        }
+        off += entr->entry_size;
+
         if (!strcmp(entr->filename, filename)) { // TODO strncmp would be better
             ret = entr->inode;
             goto ret;
         }
-
-        off += entr->entry_size;
     }
 
 fail:
     ret = FAIL;
 ret:
     free(dirdata);
+    if (endoff != NULL && ret == FAIL) {
+        *endoff = off;
+    }
     return ret;
 }
 
 void dufs_dir_append_filename(struct inode_t *dir, const char *filename,
-                              inodeptr_t target) {
+                              inodeptr_t target, size_t endoff) {
     assert(dir->type == INODE_TYPE_DIR);
     // this assumes that the filename does not already exist in the directory.
 
-    size_t end = dir->fsize;
     u8 buf[MAX_FILENAME_LEN + 1 + sizeof(struct direntry_t)];
     struct direntry_t *entr = (struct direntry_t *)buf;
     size_t namelen = strlen(filename) + 1;
@@ -541,7 +547,7 @@ void dufs_dir_append_filename(struct inode_t *dir, const char *filename,
     entr->entry_size = len;
     strncpy(entr->filename, filename, MAX_FILENAME_LEN);
 
-    dufs_inode_write_data(dir, end, entr->entry_size, buf);
+    dufs_inode_write_data(dir, endoff, entr->entry_size, buf);
     // TODO handle incomplete write
 }
 
@@ -554,37 +560,41 @@ int dufs_dir_remove_filename(struct inode_t *dir, const char *filename) {
 
     if (!dirdata) {
         perror("malloc");
-        // exit(1);
-        goto fail;
+        exit(1);
     }
 
     dufs_inode_read_data(dir, 0, dir->fsize, dirdata);
 
     size_t off = 0;
+    bool found = false;
     struct direntry_t *entr;
 
     while (off < dir->fsize) {
         entr = (struct direntry_t *)(dirdata + off);
 
+        if (entr->entry_size == 0) {
+            goto fail;
+        }
+
         if (!strcmp(entr->filename, filename)) { // TODO strncmp would be better
+            found = true;
             break;
         }
 
         off += entr->entry_size;
     }
-    if (off >= dir->fsize) {
+    if (!found) {
         goto fail;
     }
-    fprintf(stderr, "dirremove: found entry. size: %d\n", entr->entry_size);
-    memmove(dirdata + off, dirdata + off + entr->entry_size,
-            dir->fsize - off - entr->entry_size);
+    size_t sz = entr->entry_size;
+    fprintf(stderr, "dirremove: found entry. offset: %lu, size: %lu\n", off,
+            sz);
+    memmove(dirdata + off, dirdata + off + sz, dir->fsize - off - sz);
+    memset(dirdata + dir->fsize - sz, 0, sz);
 
-    // TODO this is broken
-
-    size_t orig_size = dir->fsize;
     dufs_inode_write_data(dir, 0, dir->fsize, dirdata);
 
-    dufs_write_inode(dir, dir->num);
+    // dufs_write_inode(dir, dir->num);
     ret = OK;
     goto ret;
 
@@ -620,7 +630,7 @@ inodeptr_t dufs_path_lookup(const char *path) {
     char *ptok = strtok_r(pathptr, dufs_tok_delim, &saveptr);
     fprintf(stderr, "p: <%s>\n", ptok);
 
-    nextptr = dufs_dir_find_filename(&inode, ptok);
+    nextptr = dufs_dir_find_filename(&inode, ptok, NULL);
     if (nextptr == FAIL) {
         return FAIL;
     }
@@ -632,7 +642,7 @@ inodeptr_t dufs_path_lookup(const char *path) {
         if (inode.type != INODE_TYPE_DIR) { // TODO symlinks
             return FAIL;
         }
-        nextptr = dufs_dir_find_filename(&inode, tok);
+        nextptr = dufs_dir_find_filename(&inode, tok, NULL);
         if (nextptr == FAIL) {
             return FAIL;
         }
@@ -728,6 +738,12 @@ file_t *fs_creat(const char *path) {
     struct inode_t dirinode;
     dufs_read_inode(&dirinode, ret);
 
+    size_t endoff;
+    if (dufs_dir_find_filename(&dirinode, basename, &endoff) != FAIL) {
+        // TODO existuje
+        return NULL;
+    }
+
     inodeptr_t newptr =
         dufs_alloc_inode(0); // TODO read last loc from superblock?
     if (newptr == FAIL) {
@@ -741,7 +757,7 @@ file_t *fs_creat(const char *path) {
     new.num = newptr;
     dufs_write_inode(&new, newptr);
 
-    dufs_dir_append_filename(&dirinode, basename, newptr);
+    dufs_dir_append_filename(&dirinode, basename, newptr, endoff);
 
     return dufs_open_inode(newptr);
 }

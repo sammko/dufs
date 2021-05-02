@@ -25,7 +25,7 @@ int main(void) {
     struct inode_t inode;
     dufs_read_inode(&inode, dufs_root_inode_pos());
 
-    dufs_dir_append_filename(&inode, "testfile2", 9999);
+    // dufs_dir_append_filename(&inode, "testfile2", 9999);
 
     // dufs_inode_write_data(&inode, 0, 8192, buf);
     // dufs_inode_write_data(&inode, 8192, 8192, buf);
