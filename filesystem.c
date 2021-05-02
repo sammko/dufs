@@ -187,6 +187,7 @@ blockptr_t dufs_alloc_datablock(size_t req) {
         // requested block is free, alloc it
         dufs_bitmap_set_datablock(req, true);
         fprintf(stderr, "   req avail\n");
+        fprintf(stderr, "   ret: %lu\n", req);
         return req;
     }
     fprintf(stderr, "   req notavail\n");
@@ -208,6 +209,7 @@ inodeptr_t dufs_alloc_inode(size_t req) {
     if (!dufs_bitmap_get(req)) {
         dufs_bitmap_set(req, true);
         fprintf(stderr, "   req avail\n");
+        fprintf(stderr, "   ret: %lu\n", req);
         return req;
     }
     fprintf(stderr, "   req notavail\n");
@@ -491,7 +493,8 @@ inodeptr_t dufs_dir_find_filename(const struct inode_t *dir,
                                   const char *filename, size_t *endoff) {
     assert(dir->type == INODE_TYPE_DIR);
     if (dir->fsize == 0) {
-        *endoff = 0;
+        if (endoff != NULL)
+            *endoff = 0;
         return FAIL;
     }
     inodeptr_t ret;
@@ -656,6 +659,7 @@ inodeptr_t dufs_path_lookup(const char *path) {
 void dufs_free_datablock_indir(int indir, size_t dblock_indir) {
     if (indir == 0) {
         dufs_bitmap_set_datablock(dblock_indir, false);
+        return;
     }
 
     struct datablock_indir_t ptrs;
@@ -728,6 +732,7 @@ void fs_format() {
  */
 
 file_t *fs_creat(const char *path) {
+    fprintf(stderr, "creat: %s\n", path);
     char pathcpy[MAX_PATH_LEN];
     strncpy(pathcpy, path, MAX_PATH_LEN);
     char *pathptr = pathcpy;
