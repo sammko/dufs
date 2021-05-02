@@ -618,6 +618,15 @@ ret:
     return ret;
 }
 
+inodeptr_t dufs_path_lookup(const char *path);
+
+inodeptr_t dufs_symlink_resolve(struct inode_t *symlink) {
+    u8 buf[MAX_PATH_LEN];
+    size_t slen = dufs_inode_read_data(symlink, 0, MAX_PATH_LEN, buf);
+    buf[slen] = 0;
+    return dufs_path_lookup((char *)buf);
+}
+
 static char dufs_tok_delim[2] = {PATHSEP, 0};
 inodeptr_t dufs_path_lookup(const char *path) {
     inodeptr_t rootinode = dufs_root_inode_pos();
@@ -652,8 +661,15 @@ inodeptr_t dufs_path_lookup(const char *path) {
     while (tok != NULL) {
         fprintf(stderr, "t: <%s>\n", tok);
         dufs_read_inode(&inode, nextptr);
-        if (inode.type != INODE_TYPE_DIR) { // TODO symlinks
+        if (inode.type != INODE_TYPE_DIR && inode.type != INODE_TYPE_SYMLINK) {
             return FAIL;
+        }
+        if (inode.type == INODE_TYPE_SYMLINK) {
+            inodeptr_t sym_ino = dufs_symlink_resolve(&inode);
+            if (sym_ino == FAIL) {
+                return FAIL;
+            }
+            dufs_read_inode(&inode, sym_ino);
         }
         nextptr = dufs_dir_find_filename(&inode, tok, NULL);
         if (nextptr == FAIL) {
@@ -661,6 +677,13 @@ inodeptr_t dufs_path_lookup(const char *path) {
         }
         ptok = tok;
         tok = strtok_r(NULL, dufs_tok_delim, &saveptr);
+    }
+
+    struct inode_t in2;
+    // TODO this could be optimized by storing link flag in dir
+    dufs_read_inode(&in2, nextptr);
+    if (in2.type == INODE_TYPE_SYMLINK) {
+        return dufs_symlink_resolve(&in2);
     }
 
     return nextptr;
@@ -729,6 +752,15 @@ file_t *dufs_open_inode(inodeptr_t ino) {
     file_t *fd = fd_alloc();
     fd->info[FILET_INODEPTR] = ino;
     fd->info[FILET_OFFSET] = 0;
+    fd->info[FILET_TYPE] = FILET_TYPE_NORMAL;
+    return fd;
+}
+
+file_t *dufs_open_dirinode(inodeptr_t ino) {
+    file_t *fd = fd_alloc();
+    fd->info[FILET_INODEPTR] = ino;
+    fd->info[FILET_OFFSET] = 0;
+    fd->info[FILET_TYPE] = FILET_TYPE_DIR;
     return fd;
 }
 
@@ -1042,7 +1074,13 @@ int fs_rmdir(const char *path) {
  * Vrati handle na otvoreny adresar s poziciou nastavenou na 0; alebo FAIL v
  * pripade zlyhania.
  */
-file_t *fs_opendir(const char *path) { return (file_t *)FAIL; }
+file_t *fs_opendir(const char *path) {
+    inodeptr_t ret = dufs_path_lookup(path);
+    if (ret == FAIL) {
+        return NULL;
+    }
+    return dufs_open_dirinode(ret);
+}
 
 /**
  * Nacita nazov dalsej polozky z adresara.
@@ -1052,12 +1090,37 @@ file_t *fs_opendir(const char *path) { return (file_t *)FAIL; }
  * V pripade problemu, alebo ak nasledujuca polozka neexistuje, vracia FAIL.
  * (V pripade jedneho suboru v adresari vracia FAIL az pri druhom volani.)
  */
-int fs_readdir(file_t *dir, char *item) { return FAIL; }
+int fs_readdir(file_t *dir, char *item) {
+    if (dir->info[FILET_TYPE] != FILET_TYPE_DIR) {
+        return FAIL;
+    }
+    inodeptr_t ino = dir->info[FILET_INODEPTR];
+    size_t off = dir->info[FILET_OFFSET];
+    struct inode_t in;
+    dufs_read_inode(&in, ino);
+    struct direntry_t de;
+    int ret =
+        dufs_inode_read_data(&in, off, sizeof(struct direntry_t), (u8 *)(&de));
+    if (ret == 0) {
+        return FAIL;
+    }
+    assert(ret == sizeof(struct direntry_t));
+    size_t namelen =
+        de.entry_size - sizeof(struct direntry_t); // TODO null terminator?
+    dufs_inode_read_data(&in, off + ret, namelen, (u8 *)item);
+    dir->info[FILET_OFFSET] += de.entry_size;
+    return OK;
+}
 
 /**
  * Zatvori otvoreny adresar.
  */
-int fs_closedir(file_t *dir) { return FAIL; }
+int fs_closedir(file_t *dir) {
+    if (dir->info[FILET_TYPE] != FILET_TYPE_DIR)
+        return FAIL;
+    dufs_close_filet(dir);
+    return OK;
+}
 
 /* Level 4 */
 /**
@@ -1105,4 +1168,44 @@ int fs_link(const char *path, const char *linkpath) {
 /**
  * Vytvori symlink z 'path' na 'linkpath'.
  */
-int fs_symlink(const char *path, const char *linkpath) { return FAIL; }
+int fs_symlink(const char *path, const char *linkpath) {
+    char pathcpy[MAX_PATH_LEN];
+    strncpy(pathcpy, linkpath, MAX_PATH_LEN);
+    char *pathptr = pathcpy;
+
+    char *lastsep = strrchr(pathcpy, PATHSEP);
+    *lastsep = 0; // pathptr now contains prefix
+    char *basename = lastsep + 1;
+
+    inodeptr_t ret = dufs_path_lookup(pathptr);
+    if (ret == FAIL) {
+        return FAIL;
+    }
+    struct inode_t dirinode;
+    dufs_read_inode(&dirinode, ret);
+
+    size_t endoff;
+    inodeptr_t ino = dufs_dir_find_filename(&dirinode, basename, &endoff);
+    if (ino != FAIL) {
+        return FAIL;
+    }
+
+    inodeptr_t newptr =
+        dufs_alloc_inode(0); // TODO read last loc from superblock?
+    if (newptr == FAIL) {
+        return FAIL;
+    }
+    struct inode_t new;
+    memset(&new, 0, sizeof(struct inode_t));
+    new.refcnt = 1;
+    new.type = INODE_TYPE_SYMLINK;
+    new.fsize = 0;
+    new.num = newptr;
+    dufs_write_inode(&new, newptr);
+
+    dufs_inode_write_data(&new, 0, strlen(path), (u8 *)path);
+
+    dufs_dir_append_filename(&dirinode, basename, newptr, endoff);
+
+    return OK;
+}

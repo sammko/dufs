@@ -27,6 +27,10 @@
 
 #define FILET_INODEPTR 0
 #define FILET_OFFSET 1
+#define FILET_TYPE 2
+
+#define FILET_TYPE_NORMAL 0
+#define FILET_TYPE_DIR 1
 
 typedef uint8_t u8;
 typedef uint16_t u16;
