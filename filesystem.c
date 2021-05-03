@@ -85,10 +85,10 @@ _Static_assert(sizeof(struct datablock_indir_t) == DATABLOCK_SIZE,
 /**
  * Write inode to disk
  */
-void dufs_write_inode(const struct inode_t *in, size_t sector_addr) {
+void dufs_write_inode(const struct inode_t *in) {
     u8 sector[SECTOR_SIZE] = {0};
     memcpy(sector, in, sizeof(struct inode_t));
-    hdd_write(sector_addr, sector);
+    hdd_write(in->num, sector);
 }
 
 /**
@@ -588,7 +588,7 @@ ret:
         inode_modified = true;
     }
     if (inode_modified) {
-        dufs_write_inode(in, in->num);
+        dufs_write_inode(in);
     }
     return ret;
 }
@@ -710,7 +710,6 @@ int dufs_dir_remove_filename(struct inode_t *dir, const char *filename) {
 
     dufs_inode_write_data(dir, off, dir->fsize - off, dirdata + off);
 
-    // dufs_write_inode(dir, dir->num);
     ret = OK;
     goto ret;
 
@@ -848,7 +847,7 @@ int dufs_unlink(const char *path, struct inode_t in) {
     if (--in.refcnt == 0) {
         dufs_inode_free(&in);
     } else {
-        dufs_write_inode(&in, in.num);
+        dufs_write_inode(&in);
     }
     return OK;
 }
@@ -888,7 +887,7 @@ void fs_format() {
     root.refcnt = 1;
     root.fsize = 0;
     root.num = rootpos;
-    dufs_write_inode(&root, rootpos);
+    dufs_write_inode(&root);
     dufs_bitmap_init();
 }
 
@@ -926,7 +925,7 @@ file_t *fs_creat(const char *path) {
         struct inode_t in;
         dufs_read_inode(&in, ino);
         dufs_inode_free_data(&in);
-        dufs_write_inode(&in, in.num);
+        dufs_write_inode(&in);
         return dufs_open_inode(ino);
     }
 
@@ -940,7 +939,7 @@ file_t *fs_creat(const char *path) {
     new.type = INODE_TYPE_FILE;
     new.fsize = 0;
     new.num = newptr;
-    dufs_write_inode(&new, newptr);
+    dufs_write_inode(&new);
 
     dufs_dir_append_filename(&dirinode, basename, newptr, endoff);
 
@@ -1142,7 +1141,7 @@ int fs_mkdir(const char *path) {
     new.type = INODE_TYPE_DIR;
     new.fsize = 0;
     new.num = newptr;
-    dufs_write_inode(&new, newptr);
+    dufs_write_inode(&new);
 
     dufs_dir_append_filename(&parentinode, basename, newptr, endoff);
 
@@ -1264,7 +1263,7 @@ int fs_link(const char *path, const char *linkpath) {
     dufs_dir_append_filename(&dirinode, basename, ino, endoff);
 
     inode.refcnt++;
-    dufs_write_inode(&inode, inode.num);
+    dufs_write_inode(&inode);
     return OK;
 }
 
@@ -1303,7 +1302,7 @@ int fs_symlink(const char *path, const char *linkpath) {
     new.type = INODE_TYPE_SYMLINK;
     new.fsize = 0;
     new.num = newptr;
-    dufs_write_inode(&new, newptr);
+    dufs_write_inode(&new);
 
     dufs_inode_write_data(&new, 0, strlen(path), (u8 *)path);
 
