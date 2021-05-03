@@ -627,7 +627,7 @@ inodeptr_t dufs_symlink_resolve(struct inode_t *symlink) {
     return dufs_path_lookup((char *)buf);
 }
 
-static char dufs_tok_delim[2] = {PATHSEP, 0};
+static const char dufs_tok_delim[2] = {PATHSEP, 0};
 inodeptr_t dufs_path_lookup(const char *path) {
     inodeptr_t rootinode = dufs_root_inode_pos();
     if (path[0] == 0) {
