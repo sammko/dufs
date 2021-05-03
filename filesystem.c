@@ -605,7 +605,7 @@ int dufs_dir_remove_filename(struct inode_t *dir, const char *filename) {
     memmove(dirdata + off, dirdata + off + sz, dir->fsize - off - sz);
     memset(dirdata + dir->fsize - sz, 0, sz);
 
-    dufs_inode_write_data(dir, 0, dir->fsize, dirdata);
+    dufs_inode_write_data(dir, off, dir->fsize - off, dirdata + off);
 
     // dufs_write_inode(dir, dir->num);
     ret = OK;
