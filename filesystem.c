@@ -95,6 +95,9 @@ void dufs_bitmap_init() {
     hdd_write(BITMAP_OFFSET + fullsectors, lastbuf);
 }
 
+static u8 bitmap_cache[SECTOR_SIZE];
+static size_t bitmap_cache_meta;
+
 /**
  * Set allocated state in the bitmap. pos is index of sector
  */
@@ -106,16 +109,19 @@ void dufs_bitmap_set(size_t pos, bool state) {
 
     u8 bit = 1 << bit_index;
 
-    u8 sector[SECTOR_SIZE];
-    hdd_read(sector_addr, sector);
-
-    if (state) {
-        sector[byte_off] |= bit;
-    } else {
-        sector[byte_off] &= ~bit;
+    // u8 sector[SECTOR_SIZE];
+    if (bitmap_cache_meta != sector_addr) {
+        hdd_read(sector_addr, bitmap_cache);
+        bitmap_cache_meta = sector_addr;
     }
 
-    hdd_write(sector_addr, sector);
+    if (state) {
+        bitmap_cache[byte_off] |= bit;
+    } else {
+        bitmap_cache[byte_off] &= ~bit;
+    }
+
+    hdd_write(sector_addr, bitmap_cache);
 }
 
 /**
@@ -132,16 +138,19 @@ void dufs_bitmap_set_datablock(size_t pos, bool state) {
 
     u8 mask = 0xF << bit_index;
 
-    u8 sector[SECTOR_SIZE];
-    hdd_read(sector_addr, sector);
-
-    if (state) {
-        sector[byte_off] |= mask;
-    } else {
-        sector[byte_off] &= ~mask;
+    // u8 sector[SECTOR_SIZE];
+    if (bitmap_cache_meta != sector_addr) {
+        hdd_read(sector_addr, bitmap_cache);
+        bitmap_cache_meta = sector_addr;
     }
 
-    hdd_write(sector_addr, sector);
+    if (state) {
+        bitmap_cache[byte_off] |= mask;
+    } else {
+        bitmap_cache[byte_off] &= ~mask;
+    }
+
+    hdd_write(sector_addr, bitmap_cache);
 }
 
 /**
@@ -155,10 +164,13 @@ bool dufs_bitmap_get(size_t pos) {
 
     u8 bit = 1 << bit_index;
 
-    u8 sector[SECTOR_SIZE];
-    hdd_read(sector_addr, sector);
+    // u8 sector[SECTOR_SIZE];
+    if (bitmap_cache_meta != sector_addr) {
+        hdd_read(sector_addr, bitmap_cache);
+        bitmap_cache_meta = sector_addr;
+    }
 
-    return !!(sector[byte_off] & bit);
+    return !!(bitmap_cache[byte_off] & bit);
 }
 
 /**
@@ -175,10 +187,12 @@ bool dufs_bitmap_get_datablock(size_t pos) {
     u8 bit_index = (pos % 2) * 4;
     u8 mask = 0xF << bit_index;
 
-    u8 sector[SECTOR_SIZE];
-    hdd_read(sector_addr, sector);
+    if (bitmap_cache_meta != sector_addr) {
+        hdd_read(sector_addr, bitmap_cache);
+        bitmap_cache_meta = sector_addr;
+    }
 
-    return !!(sector[byte_off] & mask);
+    return !!(bitmap_cache[byte_off] & mask);
 }
 
 blockptr_t dufs_alloc_datablock(size_t req) {
