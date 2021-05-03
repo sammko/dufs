@@ -8,6 +8,71 @@
 #include "filesystem.h"
 #include "util.h"
 
+/**
+ * This filesystem implements L1 -- L4. Classic (ext2-like) inode pointer
+ * structure, the inode contains INODE_REF_COUNT direct pointers to datablocks
+ * (several merged sectors, to decrease the amount of indirection levels.) and
+ * INODE_INDIR_COUNT pointers to progressively deeper trees. With a datablock
+ * size of 512 bytes, this yields a max filesize of slightly over the required
+ * 1GiB. See table below for other values.
+ *
+ * indir_count      1         2         3         4         5
+ * blk_size
+ *    128:     6.0KiB  134.0KiB    4.1MiB  132.1MiB    4.1GiB
+ *    256:    20.0KiB    1.0MiB   65.0MiB    4.1GiB  260.1GiB
+ *    512:    72.0KiB    8.1MiB    1.0GiB  129.0GiB   16.1TiB
+ *   1024:   272.0KiB   64.3MiB   16.1GiB    4.0TiB    1.0PiB
+ *   2048:     1.0MiB  513.0MiB  256.5GiB  128.3TiB   64.1PiB
+ *   4096:     4.1MiB    4.0GiB    4.0TiB    4.0PiB    4.0EiB
+ *   8192:    16.1MiB   32.0GiB   64.0TiB  128.1PiB  256.1EiB
+ *  16384:    64.2MiB  256.1GiB    1.0PiB    4.0EiB   16.0ZiB
+ *  32768:   256.5MiB    2.0TiB   16.0PiB  128.0EiB    1.0YiB
+ *  65536:     1.0GiB   16.0TiB  256.0PiB    4.0ZiB   64.0YiB
+ *
+ * The default sector size would require 5 levels of indirection, which I deemed
+ * undesirable, although the sector-merging was slightly annoying to implement,
+ * and my indirection implementation is general up to arbitrary depths.
+ *
+ * The inode also contains the type of the object and its size.
+ * Write, Read and Free operations are implemented for the inode. Write and Read
+ * take a range within the file, and perform the operation with the optimal
+ * amount of hdd_ operations (that is, no unnecessary operations are performed,
+ * the counts could however be improved with various caching techniques).
+ * The Free operations simply traverses the tree and deallocates all datablocks,
+ * and the inode itself in the end. The inode fits inside one sector, and is not
+ * subject to sector-merging.
+ *
+ * The allocator itself is not great. It uses a bitmap (stored in the beggining
+ * of the hdd, after the superblock), which has 1bit / sector. An allocation
+ * request receives a preferred location and the allocator checks (in the
+ * bitmap) whether the requested sector (or block) is free. If it is not free, a
+ * sequential scan is performed starting at the requested location and
+ * continuing cyclically around the hdd. A caching mechanism is present, to
+ * cache a single sector of the bitmap, as bitmap reads are sequential in nature
+ * and examine a single bit. (or 4 bits in the datablock case).
+ * The preferred locations is selected in different ways for datablocks and
+ * inodes. If a write is being performed, and it finds out, that the file needs
+ * to be extended, the sequentially succeeding block is requested (to somewhat
+ * reduce data fragmentation). Inode allocations are also sequential, in that
+ * the location of the last-allocated inode is stored in the superblock and used
+ * for the next allocation request. (This optimization is however disabled for
+ * disks smaller than 1MiB, where it proved detrimental, due to having to read
+ * and update the superblock itself.)
+ *
+ * Directories are simply files which contain (in their data) an encoding of
+ * the directory's contents. This is a sort of linked list of direntry_t
+ * structs. A direntry_t contains the inode number, the size of the direntry
+ * (including the filename and the other fields) Variable filename lenghts are
+ * supported, up to MAX_FILENAME_LEN. This is not a limitation of the linked
+ * list, though, but of other places where I wanted to avoid allocations.
+ * The directories are scanned and also modified in linear time. A better
+ * approach would be some kind of tree, for example a trie.
+ * As file shrinking is not implemented, the directory contains empty space
+ * at the end when entries are removed.
+ *
+ * Symlinks are also simple files, which contain the target path.
+ */
+
 #define SECTORS_PER_DATABLOCK 4
 #define DATABLOCK_SIZE (SECTOR_SIZE * SECTORS_PER_DATABLOCK)
 #define DATABLOCK_INDIR_PTR_COUNT (DATABLOCK_SIZE / sizeof(blockptr_t))
