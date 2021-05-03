@@ -218,13 +218,23 @@ blockptr_t dufs_alloc_datablock(size_t req) {
     return FAIL;
 }
 
-inodeptr_t dufs_alloc_inode(size_t req) {
+bool dufs_suberblock_opt_threshold() { return (hdd_size() > 1 << 20); }
+
+inodeptr_t dufs_alloc_inode() {
+    size_t req = 0;
+    struct superblock_t sb;
+    if (dufs_suberblock_opt_threshold()) {
+        dufs_read_superblock(&sb);
+        req = sb.last_inode_ptr + 1;
+    }
+    inodeptr_t ret;
     fprintf(stderr, "alloc inode called with req: %lu\n", req);
     if (!dufs_bitmap_get(req)) {
         dufs_bitmap_set(req, true);
         fprintf(stderr, "   req avail\n");
         fprintf(stderr, "   ret: %lu\n", req);
-        return req;
+        ret = req;
+        goto ret;
     }
     fprintf(stderr, "   req notavail\n");
     // TODO bitmap cache or randomize
@@ -233,10 +243,18 @@ inodeptr_t dufs_alloc_inode(size_t req) {
         if (!dufs_bitmap_get(i)) {
             dufs_bitmap_set(i, true);
             fprintf(stderr, "   ret: %lu\n", i);
-            return i;
+            ret = i;
+            goto ret;
         }
     }
     return FAIL;
+ret:
+    if (dufs_suberblock_opt_threshold()) {
+        sb.last_inode_ptr = ret;
+        dufs_write_superblock(&sb);
+    }
+
+    return ret;
 }
 
 size_t dufs_read_datablock(size_t dblock, size_t offset, size_t len,
@@ -842,8 +860,7 @@ file_t *fs_creat(const char *path) {
         return dufs_open_inode(ino);
     }
 
-    inodeptr_t newptr =
-        dufs_alloc_inode(0); // TODO read last loc from superblock?
+    inodeptr_t newptr = dufs_alloc_inode();
     if (newptr == FAIL) {
         return NULL;
     }
@@ -1045,8 +1062,7 @@ int fs_mkdir(const char *path) {
         return FAIL;
     }
 
-    inodeptr_t newptr =
-        dufs_alloc_inode(0); // TODO read last loc from superblock?
+    inodeptr_t newptr = dufs_alloc_inode();
     if (newptr == FAIL) {
         return FAIL;
     }
@@ -1207,8 +1223,7 @@ int fs_symlink(const char *path, const char *linkpath) {
         return FAIL;
     }
 
-    inodeptr_t newptr =
-        dufs_alloc_inode(0); // TODO read last loc from superblock?
+    inodeptr_t newptr = dufs_alloc_inode();
     if (newptr == FAIL) {
         return FAIL;
     }
