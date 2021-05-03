@@ -5,9 +5,82 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "dufs.h"
 #include "filesystem.h"
 #include "util.h"
+
+#define SECTORS_PER_DATABLOCK 4
+#define DATABLOCK_SIZE (SECTOR_SIZE * SECTORS_PER_DATABLOCK)
+#define DATABLOCK_INDIR_PTR_COUNT (DATABLOCK_SIZE / sizeof(blockptr_t))
+
+#define BITS_PER_SECTOR (SECTOR_SIZE * 8)
+#define SUPERBLOCK_POS 0
+#define BITMAP_OFFSET 1
+
+#define INODE_REF_COUNT 16
+#define INODE_INDIR_COUNT 3
+#define INODE_TYPE_FILE STAT_TYPE_FILE
+#define INODE_TYPE_DIR STAT_TYPE_DIR
+#define INODE_TYPE_SYMLINK STAT_TYPE_SYMLINK
+
+#define MAX_FILENAME_LEN 255
+#define MAX_PATH_LEN 2048
+
+#define DPTR_VALID(p) (p) // use 0 for invalid
+
+#define FILET_INODEPTR 0
+#define FILET_OFFSET 1
+#define FILET_TYPE 2
+
+#define FILET_TYPE_NORMAL 0
+#define FILET_TYPE_DIR 1
+
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+
+typedef int32_t blockptr_t;
+typedef int32_t inodeptr_t;
+
+struct inode_t {
+    u16 refcnt;
+    u8 type;
+    u8 _pad0;
+    u32 fsize;
+    u32 num;
+    u32 data[INODE_REF_COUNT];
+    u32 data_indir[INODE_INDIR_COUNT];
+} __attribute__((packed, scalar_storage_order("little-endian")));
+
+struct superblock_t {
+    u32 last_inode_ptr;
+} __attribute__((packed, scalar_storage_order("little-endian")));
+
+struct direntry_t {
+    u32 inode;
+    u16 entry_size;
+    // u8 filename_length;
+    char filename[]; // fam
+} __attribute__((packed, scalar_storage_order("little-endian")));
+
+struct datablock_indir_t {
+    blockptr_t pts[DATABLOCK_INDIR_PTR_COUNT];
+} __attribute__((packed, scalar_storage_order("little-endian")));
+
+_Static_assert(sizeof(struct inode_t) <= SECTOR_SIZE, "inode too big");
+_Static_assert(sizeof(struct datablock_indir_t) == DATABLOCK_SIZE,
+               "datablock size wrong");
+
+#ifdef DBG
+#define DEBUG(...)                                                             \
+    do {                                                                       \
+        fprintf(stderr, __VA_ARGS__);                                          \
+    } while (false)
+#else
+#define DEBUG(...)                                                             \
+    do {                                                                       \
+    } while (false)
+#endif
 
 /**
  * Write inode to disk
@@ -77,7 +150,7 @@ void dufs_bitmap_init() {
     size_t fullsectors = bytes / SECTOR_SIZE;
     u8 ones[SECTOR_SIZE];
 
-    fprintf(stderr, "n: %lu\n", n);
+    DEBUG("n: %lu\n", n);
 
     memset(ones, 0xff, SECTOR_SIZE);
     for (size_t i = 0; i < fullsectors; i++) {
@@ -196,20 +269,20 @@ bool dufs_bitmap_get_datablock(size_t pos) {
 }
 
 blockptr_t dufs_alloc_datablock(size_t req) {
-    fprintf(stderr, "alloc data called with req: %lu\n", req);
+    DEBUG("alloc data called with req: %lu\n", req);
     if (!dufs_bitmap_get_datablock(req)) {
         dufs_bitmap_set_datablock(req, true);
-        fprintf(stderr, "   req avail\n");
-        fprintf(stderr, "   ret: %lu\n", req);
+        DEBUG("   req avail\n");
+        DEBUG("   ret: %lu\n", req);
         return req;
     }
-    fprintf(stderr, "   req notavail\n");
+    DEBUG("   req notavail\n");
     size_t count = hdd_size() / DATABLOCK_SIZE;
     for (size_t db = 0; db < count; db++) {
         size_t j = (db + req) % count;
         if (!dufs_bitmap_get_datablock(j)) {
             dufs_bitmap_set_datablock(j, true);
-            fprintf(stderr, "   ret: %lu\n", j);
+            DEBUG("   ret: %lu\n", j);
             return j;
         }
     }
@@ -226,21 +299,21 @@ inodeptr_t dufs_alloc_inode() {
         req = sb.last_inode_ptr + 1;
     }
     inodeptr_t ret;
-    fprintf(stderr, "alloc inode called with req: %lu\n", req);
+    DEBUG("alloc inode called with req: %lu\n", req);
     if (!dufs_bitmap_get(req)) {
         dufs_bitmap_set(req, true);
-        fprintf(stderr, "   req avail\n");
-        fprintf(stderr, "   ret: %lu\n", req);
+        DEBUG("   req avail\n");
+        DEBUG("   ret: %lu\n", req);
         ret = req;
         goto ret;
     }
-    fprintf(stderr, "   req notavail\n");
+    DEBUG("   req notavail\n");
     size_t count = hdd_size() / SECTOR_SIZE;
     for (size_t i = 0; i < count; i++) {
         size_t j = (i + req) % count;
         if (!dufs_bitmap_get(j)) {
             dufs_bitmap_set(j, true);
-            fprintf(stderr, "   ret: %lu\n", j);
+            DEBUG("   ret: %lu\n", j);
             ret = j;
             goto ret;
         }
@@ -257,8 +330,8 @@ ret:
 
 size_t dufs_read_datablock(size_t dblock, size_t offset, size_t len,
                            u8 *outbuf) {
-    fprintf(stderr, "read called with: dblock: %lu, offset: %lu, len: %lu\n",
-            dblock, offset, len);
+    DEBUG("read called with: dblock: %lu, offset: %lu, len: %lu\n", dblock,
+          offset, len);
 
     if (offset >= DATABLOCK_SIZE)
         return 0;
@@ -270,8 +343,8 @@ size_t dufs_read_datablock(size_t dblock, size_t offset, size_t len,
     size_t skip = offset / SECTOR_SIZE;
     size_t sector_offset = offset % SECTOR_SIZE;
     size_t first_len = SECTOR_SIZE - sector_offset;
-    fprintf(stderr, "   skip: %lu, sector_offset: %lu, first_len: %lu\n", skip,
-            sector_offset, first_len);
+    DEBUG("   skip: %lu, sector_offset: %lu, first_len: %lu\n", skip,
+          sector_offset, first_len);
     if (len < first_len) {
         first_len = len;
     }
@@ -282,7 +355,7 @@ size_t dufs_read_datablock(size_t dblock, size_t offset, size_t len,
 
     size_t rem_count = (len - first_len) / SECTOR_SIZE;
     size_t last_len = (len - first_len) % SECTOR_SIZE;
-    fprintf(stderr, "   rem_count: %lu, last_len: %lu\n", rem_count, last_len);
+    DEBUG("   rem_count: %lu, last_len: %lu\n", rem_count, last_len);
 
     for (size_t i = 0; i < rem_count; i++) {
         hdd_read(sector + skip + i + 1, outbuf);
@@ -631,8 +704,7 @@ int dufs_dir_remove_filename(struct inode_t *dir, const char *filename) {
         goto fail;
     }
     size_t sz = entr->entry_size;
-    fprintf(stderr, "dirremove: found entry. offset: %lu, size: %lu\n", off,
-            sz);
+    DEBUG("dirremove: found entry. offset: %lu, size: %lu\n", off, sz);
     memmove(dirdata + off, dirdata + off + sz, dir->fsize - off - sz);
     memset(dirdata + dir->fsize - sz, 0, sz);
 
@@ -681,7 +753,7 @@ inodeptr_t dufs_path_lookup(const char *path) {
     inodeptr_t nextptr;
     char *saveptr = NULL;
     char *ptok = strtok_r(pathptr, dufs_tok_delim, &saveptr);
-    fprintf(stderr, "p: <%s>\n", ptok);
+    DEBUG("p: <%s>\n", ptok);
 
     nextptr = dufs_dir_find_filename(&inode, ptok, NULL);
     if (nextptr == FAIL) {
@@ -690,7 +762,7 @@ inodeptr_t dufs_path_lookup(const char *path) {
     char *tok = strtok_r(NULL, dufs_tok_delim, &saveptr);
 
     while (tok != NULL) {
-        fprintf(stderr, "t: <%s>\n", tok);
+        DEBUG("t: <%s>\n", tok);
         dufs_read_inode(&inode, nextptr);
         if (inode.type != INODE_TYPE_DIR && inode.type != INODE_TYPE_SYMLINK) {
             return FAIL;
@@ -831,7 +903,7 @@ void fs_format() {
  */
 
 file_t *fs_creat(const char *path) {
-    fprintf(stderr, "creat: %s\n", path);
+    DEBUG("creat: %s\n", path);
     char pathcpy[MAX_PATH_LEN];
     strncpy(pathcpy, path, MAX_PATH_LEN);
     char *pathptr = pathcpy;
@@ -913,7 +985,7 @@ int fs_unlink(const char *path) {
         return FAIL;
     }
     struct inode_t in;
-    fprintf(stderr, "fs_unlink read file inode, ino: %u\n", ino);
+    DEBUG("fs_unlink read file inode, ino: %u\n", ino);
     dufs_read_inode(&in, ino);
     if (in.type == INODE_TYPE_DIR)
         return FAIL;
@@ -1037,7 +1109,7 @@ int fs_stat(const char *path, struct fs_stat *fs_stat) {
  * jeden adresar), pri korektnom vytvoreni OK.
  */
 int fs_mkdir(const char *path) {
-    fprintf(stderr, "mkdir: %s\n", path);
+    DEBUG("mkdir: %s\n", path);
     char pathcpy[MAX_PATH_LEN];
     strncpy(pathcpy, path, MAX_PATH_LEN);
     char *pathptr = pathcpy;

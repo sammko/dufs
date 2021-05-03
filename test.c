@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "dufs.h"
 #include "filesystem.h"
 #include "util.h"
 
@@ -21,9 +20,6 @@ int main(void) {
     // for (size_t i = 0; i < 8192; i++) {
     //     buf[i] = (i / 2) ^ 0x00;
     // }
-
-    struct inode_t inode;
-    dufs_read_inode(&inode, dufs_root_inode_pos());
 
     // dufs_dir_append_filename(&inode, "testfile2", 9999);
 
