@@ -788,7 +788,7 @@ ret:
 inodeptr_t dufs_path_lookup(const char *path);
 
 inodeptr_t dufs_symlink_resolve(struct inode_t *symlink) {
-    u8 buf[MAX_PATH_LEN];
+    u8 buf[MAX_PATH_LEN + 1];
     size_t slen = dufs_inode_read_data(symlink, 0, MAX_PATH_LEN, buf);
     buf[slen] = 0;
     return dufs_path_lookup((char *)buf);
