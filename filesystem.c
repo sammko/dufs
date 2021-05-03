@@ -198,7 +198,6 @@ bool dufs_bitmap_get_datablock(size_t pos) {
 blockptr_t dufs_alloc_datablock(size_t req) {
     fprintf(stderr, "alloc data called with req: %lu\n", req);
     if (!dufs_bitmap_get_datablock(req)) {
-        // requested block is free, alloc it
         dufs_bitmap_set_datablock(req, true);
         fprintf(stderr, "   req avail\n");
         fprintf(stderr, "   ret: %lu\n", req);
@@ -206,13 +205,12 @@ blockptr_t dufs_alloc_datablock(size_t req) {
     }
     fprintf(stderr, "   req notavail\n");
     size_t count = hdd_size() / DATABLOCK_SIZE;
-    // the bitmap really needs a cache
-    // TODO maybe start looking at a pseudorandom block instead of in-order
     for (size_t db = 0; db < count; db++) {
-        if (!dufs_bitmap_get_datablock(db)) {
-            dufs_bitmap_set_datablock(db, true);
-            fprintf(stderr, "   ret: %lu\n", db);
-            return db;
+        size_t j = (db + req) % count;
+        if (!dufs_bitmap_get_datablock(j)) {
+            dufs_bitmap_set_datablock(j, true);
+            fprintf(stderr, "   ret: %lu\n", j);
+            return j;
         }
     }
     return FAIL;
@@ -237,13 +235,13 @@ inodeptr_t dufs_alloc_inode() {
         goto ret;
     }
     fprintf(stderr, "   req notavail\n");
-    // TODO bitmap cache or randomize
     size_t count = hdd_size() / SECTOR_SIZE;
     for (size_t i = 0; i < count; i++) {
-        if (!dufs_bitmap_get(i)) {
-            dufs_bitmap_set(i, true);
-            fprintf(stderr, "   ret: %lu\n", i);
-            ret = i;
+        size_t j = (i + req) % count;
+        if (!dufs_bitmap_get(j)) {
+            dufs_bitmap_set(j, true);
+            fprintf(stderr, "   ret: %lu\n", j);
+            ret = j;
             goto ret;
         }
     }
