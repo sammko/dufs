@@ -273,6 +273,7 @@ size_t dufs_read_datablock_indirect(int indir, size_t dblock_indir,
     }
 
     struct datablock_indir_t ptrs;
+    // TODO this can be optimized
     dufs_read_datablock(dblock_indir, 0, DATABLOCK_SIZE, (u8 *)&ptrs);
 
     size_t subblock_size = DATABLOCK_SIZE;
@@ -664,7 +665,7 @@ inodeptr_t dufs_path_lookup(const char *path) {
         if (inode.type != INODE_TYPE_DIR && inode.type != INODE_TYPE_SYMLINK) {
             return FAIL;
         }
-        if (inode.type == INODE_TYPE_SYMLINK) {
+        while (inode.type == INODE_TYPE_SYMLINK) {
             inodeptr_t sym_ino = dufs_symlink_resolve(&inode);
             if (sym_ino == FAIL) {
                 return FAIL;
@@ -679,12 +680,14 @@ inodeptr_t dufs_path_lookup(const char *path) {
         tok = strtok_r(NULL, dufs_tok_delim, &saveptr);
     }
 
-    struct inode_t in2;
     // TODO this could be optimized by storing link flag in dir
-    dufs_read_inode(&in2, nextptr);
-    if (in2.type == INODE_TYPE_SYMLINK) {
-        return dufs_symlink_resolve(&in2);
-    }
+    struct inode_t in2;
+    do {
+        dufs_read_inode(&in2, nextptr);
+        if (in2.type == INODE_TYPE_SYMLINK) {
+            nextptr = dufs_symlink_resolve(&in2);
+        }
+    } while (in2.type == INODE_TYPE_SYMLINK);
 
     return nextptr;
 }
